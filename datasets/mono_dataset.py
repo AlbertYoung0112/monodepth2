@@ -15,6 +15,7 @@ from PIL import Image  # using pillow-simd for increased speed
 import torch
 import torch.utils.data as data
 from torchvision import transforms
+from scipy.interpolate import interp1d
 
 
 def pil_loader(path):
@@ -46,7 +47,9 @@ class MonoDataset(data.Dataset):
                  frame_idxs,
                  num_scales,
                  is_train=False,
-                 img_ext='.jpg'):
+                 img_ext='.jpg',
+                 with_sample=False
+                 ):
         super(MonoDataset, self).__init__()
 
         self.data_path = data_path
@@ -60,6 +63,7 @@ class MonoDataset(data.Dataset):
 
         self.is_train = is_train
         self.img_ext = img_ext
+        self.with_sample = with_sample
 
         self.loader = pil_loader
         self.to_tensor = transforms.ToTensor()
@@ -100,6 +104,13 @@ class MonoDataset(data.Dataset):
                 n, im, i = k
                 for i in range(self.num_scales):
                     inputs[(n, im, i)] = self.resize[i](inputs[(n, im, i - 1)])
+            if "sample" in k:
+                n, im, i = k
+                pts_cnt = len(frame)
+                int_func = interp1d(np.arange(pts_cnt), frame)
+                for i in range(self.num_scales):
+                    s = 2 ** i
+                    inputs[(n, im, i)] = int_func(np.linspace(0, pts_cnt - 1, int(self.width // s)))
 
         for k in list(inputs):
             f = inputs[k]
@@ -107,6 +118,9 @@ class MonoDataset(data.Dataset):
                 n, im, i = k
                 inputs[(n, im, i)] = self.to_tensor(f)
                 inputs[(n + "_aug", im, i)] = self.to_tensor(color_aug(f))
+            if "sample" in k:
+                n, im, i = k
+                inputs[(n, im, i)] = torch.tensor(f)
 
     def __len__(self):
         return len(self.filenames)
@@ -159,6 +173,12 @@ class MonoDataset(data.Dataset):
                 inputs[("color", i, -1)] = self.get_color(folder, frame_index, other_side, do_flip)
             else:
                 inputs[("color", i, -1)] = self.get_color(folder, frame_index + i, side, do_flip)
+            if self.with_sample:
+                if i == "s":
+                    other_side = {"r": "l", "l": "r"}[side]
+                    inputs[("sample", i, -1)] = self.get_sample(folder, frame_index + i, other_side, do_flip)
+                else:
+                    inputs[("sample", i, -1)] = self.get_sample(folder, frame_index + i, side, do_flip)
 
         # adjusting intrinsics to match each scale in the pyramid
         for scale in range(self.num_scales):
@@ -200,6 +220,9 @@ class MonoDataset(data.Dataset):
         return inputs
 
     def get_color(self, folder, frame_index, side, do_flip):
+        raise NotImplementedError
+
+    def get_sample(self, folder, frame_index, side, do_flip):
         raise NotImplementedError
 
     def check_depth(self):

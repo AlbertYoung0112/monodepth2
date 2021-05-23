@@ -63,6 +63,18 @@ class KITTIRAWDataset(KITTIDataset):
             self.data_path, folder, "image_0{}/data".format(self.side_map[side]), f_str)
         return image_path
 
+    def get_sample_path(self, folder, frame_index, side):
+        f_str = "{:010d}.npy".format(frame_index, self.img_ext)
+        sample_path = os.path.join(
+            self.data_path, folder, "sample/{}".format(self.side_map[side]), f_str)
+        return sample_path
+
+    def get_sample(self, folder, frame_index, side, do_flip):
+        sample = np.load(self.get_sample_path(folder, frame_index, side))
+        if do_flip:
+            sample = sample[::-1]
+        return sample
+
     def get_depth(self, folder, frame_index, side, do_flip):
         calib_path = os.path.join(self.data_path, folder.split("/")[0])
 
