@@ -73,7 +73,7 @@ class KITTIRAWDataset(KITTIDataset):
         sample = np.load(self.get_sample_path(folder, frame_index, side))
         if do_flip:
             sample = sample[::-1]
-        return sample
+        return np.ascontiguousarray(sample)
 
     def get_depth(self, folder, frame_index, side, do_flip):
         calib_path = os.path.join(self.data_path, folder.split("/")[0])

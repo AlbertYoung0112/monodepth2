@@ -120,7 +120,7 @@ class MonoDataset(data.Dataset):
                 inputs[(n + "_aug", im, i)] = self.to_tensor(color_aug(f))
             if "sample" in k:
                 n, im, i = k
-                inputs[(n, im, i)] = torch.tensor(f)
+                inputs[(n, im, i)] = torch.tensor(f.reshape((1, -1)), dtype=torch.float)
 
     def __len__(self):
         return len(self.filenames)
@@ -176,7 +176,7 @@ class MonoDataset(data.Dataset):
             if self.with_sample:
                 if i == "s":
                     other_side = {"r": "l", "l": "r"}[side]
-                    inputs[("sample", i, -1)] = self.get_sample(folder, frame_index + i, other_side, do_flip)
+                    inputs[("sample", i, -1)] = self.get_sample(folder, frame_index, other_side, do_flip)
                 else:
                     inputs[("sample", i, -1)] = self.get_sample(folder, frame_index + i, side, do_flip)
 
