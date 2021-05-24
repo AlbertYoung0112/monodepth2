@@ -6,12 +6,15 @@
 
 from __future__ import absolute_import, division, print_function
 
+from math import ceil
 import numpy as np
 
 import torch
+import torch as th
 import torch.nn as nn
 import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
+from components import Identity, img2pc_bridge, depth_conv_1d, depthwise, pointwise, weights_init
 
 
 class ResNetMultiImageInput(models.ResNet):
@@ -62,7 +65,7 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
 class ResnetEncoder(nn.Module):
     """Pytorch module for a resnet encoder
     """
-    def __init__(self, num_layers, pretrained, num_input_images=1):
+    def __init__(self, num_layers, pretrained, num_input_images=1, with_pc=False, img_height=224):
         super(ResnetEncoder, self).__init__()
 
         self.num_ch_enc = np.array([64, 64, 128, 256, 512])
@@ -84,7 +87,40 @@ class ResnetEncoder(nn.Module):
         if num_layers > 34:
             self.num_ch_enc[1:] *= 4
 
-    def forward(self, input_image):
+        self.with_pc = with_pc
+        if with_pc:
+            self.register_pc_encoder()
+        self.ecu_pc_channel = 128
+        self.img_height = img_height
+        ecu_feat_shape = int(ceil(self.img_height / 32))
+        ecu_sample_size = 3
+        self.ecu = ECUSmall(
+            img_in_channel=self.num_ch_enc[-1],
+            pc_in_channel=self.ecu_pc_channel,
+            ecu_channel=self.num_ch_enc[-1],
+            out_shape=ecu_feat_shape,
+            concat_merge=False,
+            sample_lb=int((ecu_feat_shape - ecu_sample_size) // 2),
+            sample_size=ecu_sample_size
+        )
+
+    def register_pc_encoder(self):
+        pc_channel = [16, 32, 64, 64, 64, 64, 128, 128]
+        pc_stride = [1, 2, 1, 2, 1, 2, 2, 2]
+        pc_layers = len(pc_channel)
+        first_layer = nn.Sequential(
+            nn.Conv1d(1, pc_channel[0], kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm1d(pc_channel[0]),
+            nn.ReLU6(inplace=True)
+        )
+        setattr(self, f"pc_conv0", first_layer)
+        for layer_idx in range(pc_layers - 1):
+            setattr(self, f"pc_conv{layer_idx+1}",
+                    depth_conv_1d(pc_channel[layer_idx], pc_channel[layer_idx + 1], 3, pc_stride[layer_idx]))
+        for layer_idx in range(8, 11):
+            setattr(self, f"pc_conv{layer_idx}", Identity())
+
+    def forward(self, input_image, pc=None):
         self.features = []
         x = (input_image - 0.45) / 0.225
         x = self.encoder.conv1(x)
@@ -93,6 +129,46 @@ class ResnetEncoder(nn.Module):
         self.features.append(self.encoder.layer1(self.encoder.maxpool(self.features[-1])))
         self.features.append(self.encoder.layer2(self.features[-1]))
         self.features.append(self.encoder.layer3(self.features[-1]))
-        self.features.append(self.encoder.layer4(self.features[-1]))
+        img_feat = self.encoder.layer4(self.features[-1])
+        if self.with_pc:
+            pc_feat = pc
+            for layer_idx in range(10):
+                pc_layer = getattr(self, f'pc_conv{layer_idx}')
+                pc_feat = pc_layer(pc_feat)
+        else:
+            n, _, _, w = img_feat.shape
+            pc_feat = th.zeros((n, self.ecu_pc_channel, w), device=img_feat.device)
+        enc_feat = self.ecu(img_feat, pc_feat)
+        self.features.append(enc_feat)
 
         return self.features
+
+
+class ECUSmall(nn.Module):
+    def __init__(self, img_in_channel, pc_in_channel, ecu_channel,
+                 sample_size, sample_lb, out_shape, concat_merge):
+        super(ECUSmall, self).__init__()
+        self.sample_size = sample_size
+        self.sample_lb = sample_lb
+        self.concat_merge = concat_merge
+        self.out_shape = out_shape
+        self.img_sample_layer = img2pc_bridge(img_in_channel, ecu_channel, sample_size)
+        self.diff_extract_layer = nn.Sequential(
+            nn.Conv1d(ecu_channel + pc_in_channel, ecu_channel, 1, 1),
+            nn.BatchNorm1d(ecu_channel),
+            nn.ReLU6(inplace=True),
+            depth_conv_1d(ecu_channel, img_in_channel, 3, 1)
+        )
+        self.reduce_layer = nn.Sequential(
+            depthwise(ecu_channel, 3),
+            pointwise(ecu_channel, img_in_channel)
+        )
+
+    def forward(self, img_feat, pc_feat):
+        crop_feat = th.narrow(img_feat, dim=2, start=self.sample_lb, length=self.sample_size)
+        sample_feat = self.img_sample_layer(crop_feat)
+        cat_feat = th.cat((sample_feat, pc_feat), dim=1)
+        diff = self.diff_extract_layer(cat_feat)
+        diff_up = th.stack([diff] * self.out_shape, dim=2)
+        fixed_feat = th.cat((diff_up, img_feat), dim=1) if self.concat_merge else diff_up + img_feat
+        return fixed_feat

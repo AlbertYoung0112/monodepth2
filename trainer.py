@@ -52,7 +52,8 @@ class Trainer:
             self.opt.frame_ids.append("s")
 
         self.models["encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weights_init == "pretrained")
+            self.opt.num_layers, self.opt.weights_init == "pretrained",
+            with_pc=self.opt.with_pc, img_height=self.opt.height)
         self.models["encoder"].to(self.device)
         self.parameters_to_train += list(self.models["encoder"].parameters())
 
@@ -126,13 +127,13 @@ class Trainer:
 
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext, with_sample=self.opt.with_pc)
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         val_dataset = self.dataset(
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext, with_sample=self.opt.with_pc)
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
@@ -235,7 +236,11 @@ class Trainer:
             # If we are using a shared encoder for both depth and pose (as advocated
             # in monodepthv1), then all images are fed separately through the depth encoder.
             all_color_aug = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])
-            all_features = self.models["encoder"](all_color_aug)
+            if self.opt.with_pc:
+                all_pc = torch.cat([inputs[("sample", i, 0)] for i in self.opt.frame_ids])
+            else:
+                all_pc = None
+            all_features = self.models["encoder"](all_color_aug, all_pc)
             all_features = [torch.split(f, self.opt.batch_size) for f in all_features]
 
             features = {}
@@ -245,7 +250,11 @@ class Trainer:
             outputs = self.models["depth"](features[0])
         else:
             # Otherwise, we only feed the image with frame_id 0 through the depth encoder
-            features = self.models["encoder"](inputs["color_aug", 0, 0])
+            if self.opt.with_pc:
+                pc = inputs["sample", 0, 0]
+            else:
+                pc = None
+            features = self.models["encoder"](inputs["color_aug", 0, 0], pc)
             outputs = self.models["depth"](features)
 
         if self.opt.predictive_mask:

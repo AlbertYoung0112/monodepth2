@@ -49,6 +49,9 @@ class MonodepthOptions:
         self.parser.add_argument("--png",
                                  help="if set, trains from raw KITTI png files (instead of jpgs)",
                                  action="store_true")
+        self.parser.add_argument("--with_pc",
+                                 help="if set, use 2D point cloud",
+                                 action="store_true")
         self.parser.add_argument("--height",
                                  type=int,
                                  help="input image height",
