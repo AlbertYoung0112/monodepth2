@@ -54,6 +54,7 @@ class Trainer:
             self.opt.frame_ids.append("s")
 
         if not self.opt.mobilenet:
+            print(f"Using Resnet {self.opt.num_layers}")
             self.models["encoder"] = networks.ResnetEncoder(
                 self.opt.num_layers, self.opt.weights_init == "pretrained",
                 with_pc=self.opt.with_pc, img_height=self.opt.height)

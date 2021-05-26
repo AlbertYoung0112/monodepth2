@@ -226,6 +226,9 @@ class MobileNetEncoder(nn.Module):
             if self.with_pc:
                 pc_layer = getattr(self, f'pc_conv{layer_idx}')
                 pc_feat = pc_layer(pc_feat)
+        if not self.with_pc:
+            n, _, _, w = img_feat.shape
+            pc_feat = th.zeros((n, self.ecu_pc_channel, w), device=img_feat.device, dtype=img_feat.dtype)
         enc_feat = self.ecu(img_feat, pc_feat)
         img_feat_fw.append(enc_feat)
         return img_feat_fw
