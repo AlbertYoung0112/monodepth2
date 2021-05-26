@@ -67,6 +67,7 @@ class MonoDataset(data.Dataset):
 
         self.loader = pil_loader
         self.to_tensor = transforms.ToTensor()
+        self.full_res_shape = (0, 0)
 
         # We need to specify augmentations differently in newer versions of torchvision.
         # We first try the newer tuple version; if this fails we fall back to scalars
@@ -111,6 +112,7 @@ class MonoDataset(data.Dataset):
                 for i in range(self.num_scales):
                     s = 2 ** i
                     inputs[(n, im, i)] = int_func(np.linspace(0, pts_cnt - 1, int(self.width // s)))
+                inputs[(n, im, -1)] = int_func(np.linspace(0, pts_cnt - 1, self.full_res_shape[0]))
 
         for k in list(inputs):
             f = inputs[k]
