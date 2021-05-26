@@ -43,7 +43,14 @@ class KITTIDataset(MonoDataset):
         return os.path.isfile(velo_filename)
 
     def get_color(self, folder, frame_index, side, do_flip):
-        color = self.loader(self.get_image_path(folder, frame_index, side))
+        try:
+            color = self.loader(self.get_image_path(folder, frame_index, side))
+        except FileNotFoundError:
+            if frame_index < 0:
+                frame_index = 0
+            else:
+                frame_index -= 1
+            color = self.loader(self.get_image_path(folder, frame_index, side))
 
         if do_flip:
             color = color.transpose(pil.FLIP_LEFT_RIGHT)
@@ -70,7 +77,14 @@ class KITTIRAWDataset(KITTIDataset):
         return sample_path
 
     def get_sample(self, folder, frame_index, side, do_flip):
-        sample = np.load(self.get_sample_path(folder, frame_index, side))
+        try:
+            sample = np.load(self.get_sample_path(folder, frame_index, side))
+        except FileNotFoundError:
+            if frame_index < 0:
+                frame_index = 0
+            else:
+                frame_index -= 1
+            sample = np.load(self.get_sample_path(folder, frame_index, side))
         if do_flip:
             sample = sample[::-1]
         return np.ascontiguousarray(sample)
@@ -78,12 +92,24 @@ class KITTIRAWDataset(KITTIDataset):
     def get_depth(self, folder, frame_index, side, do_flip):
         calib_path = os.path.join(self.data_path, folder.split("/")[0])
 
-        velo_filename = os.path.join(
-            self.data_path,
-            folder,
-            "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
+        try:
+            velo_filename = os.path.join(
+                self.data_path,
+                folder,
+                "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
 
-        depth_gt = generate_depth_map(calib_path, velo_filename, self.side_map[side])
+            depth_gt = generate_depth_map(calib_path, velo_filename, self.side_map[side])
+        except FileNotFoundError:
+            if frame_index < 0:
+                frame_index = 0
+            else:
+                frame_index -= 1
+            velo_filename = os.path.join(
+                self.data_path,
+                folder,
+                "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
+            depth_gt = generate_depth_map(calib_path, velo_filename, self.side_map[side])
+
         depth_gt = skimage.transform.resize(
             depth_gt, self.full_res_shape[::-1], order=0, preserve_range=True, mode='constant')
 
