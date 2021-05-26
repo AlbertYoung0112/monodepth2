@@ -34,7 +34,7 @@ class MonodepthOptions:
         self.parser.add_argument("--split",
                                  type=str,
                                  help="which training split to use",
-                                 choices=["eigen_zhou", "eigen_full", "odom", "benchmark"],
+                                 choices=["eigen_zhou", "eigen_full", "odom", "benchmark", "sanity_test"],
                                  default="eigen_zhou")
         self.parser.add_argument("--num_layers",
                                  type=int,
@@ -51,6 +51,9 @@ class MonodepthOptions:
                                  action="store_true")
         self.parser.add_argument("--with_pc",
                                  help="if set, use 2D point cloud",
+                                 action="store_true")
+        self.parser.add_argument("--mobilenet",
+                                 help="if set, use reduced mobilenet",
                                  action="store_true")
         self.parser.add_argument("--height",
                                  type=int,

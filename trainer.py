@@ -34,6 +34,8 @@ class Trainer:
         # checking height and width are multiples of 32
         assert self.opt.height % 32 == 0, "'height' must be a multiple of 32"
         assert self.opt.width % 32 == 0, "'width' must be a multiple of 32"
+        if self.opt.mobilenet:
+            assert self.opt.pose_model_type == 'separate_resnet'
 
         self.models = {}
         self.parameters_to_train = []
@@ -51,16 +53,25 @@ class Trainer:
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
 
-        self.models["encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weights_init == "pretrained",
-            with_pc=self.opt.with_pc, img_height=self.opt.height)
-        self.models["encoder"].to(self.device)
-        self.parameters_to_train += list(self.models["encoder"].parameters())
+        if not self.opt.mobilenet:
+            self.models["encoder"] = networks.ResnetEncoder(
+                self.opt.num_layers, self.opt.weights_init == "pretrained",
+                with_pc=self.opt.with_pc, img_height=self.opt.height)
+            self.models["encoder"].to(self.device)
+            self.parameters_to_train += list(self.models["encoder"].parameters())
 
-        self.models["depth"] = networks.DepthDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales)
-        self.models["depth"].to(self.device)
-        self.parameters_to_train += list(self.models["depth"].parameters())
+            self.models["depth"] = networks.DepthDecoder(
+                self.models["encoder"].num_ch_enc, self.opt.scales)
+            self.models["depth"].to(self.device)
+            self.parameters_to_train += list(self.models["depth"].parameters())
+        else:
+            self.models["encoder"] = networks.MobileNetEncoder(with_pc=self.opt.with_pc, img_height=self.opt.height)
+            self.models["encoder"].to(self.device)
+            self.parameters_to_train += list(self.models['encoder'].parameters())
+
+            self.models['depth'] = networks.MobileNetDecoder(scales=self.opt.scales)
+            self.models["depth"].to(self.device)
+            self.parameters_to_train += list(self.models["depth"].parameters())
 
         if self.use_pose_net:
             if self.opt.pose_model_type == "separate_resnet":
