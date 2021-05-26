@@ -6,6 +6,7 @@
 
 from __future__ import absolute_import, division, print_function
 
+import os
 from math import ceil
 import numpy as np
 
@@ -15,6 +16,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
 from components import Identity, img2pc_bridge, depth_conv_1d, depthwise, pointwise, weights_init
+import imagenet.mobilenet
 
 
 class ResNetMultiImageInput(models.ResNet):
@@ -95,9 +97,9 @@ class ResnetEncoder(nn.Module):
         ecu_feat_shape = int(ceil(self.img_height / 32))
         ecu_sample_size = 3
         self.ecu = ECUSmall(
-            img_in_channel=self.num_ch_enc[-1],
+            img_in_channel=int(self.num_ch_enc[-1]),
             pc_in_channel=self.ecu_pc_channel,
-            ecu_channel=self.num_ch_enc[-1],
+            ecu_channel=int(self.num_ch_enc[-1]),
             out_shape=ecu_feat_shape,
             concat_merge=False,
             sample_lb=int((ecu_feat_shape - ecu_sample_size) // 2),
@@ -144,6 +146,91 @@ class ResnetEncoder(nn.Module):
         return self.features
 
 
+class MobileNetEncoder(nn.Module):
+    def __init__(self, mobilenet_pretrained=True, with_pc=True, img_height=224):
+        super(MobileNetEncoder, self).__init__()
+        self.img_height = img_height
+        self.img_fw_layer_src = [1, 3, 5]
+        self.ecu_pc_channel = 128
+        ecu_feat_shape = int(ceil(self.img_height / 32))
+        ecu_sample_size = 3
+        self.ecu = ECUSmall(
+            img_in_channel=512,
+            pc_in_channel=self.ecu_pc_channel,
+            ecu_channel=256,
+            out_shape=ecu_feat_shape,
+            concat_merge=False,
+            sample_lb=int((ecu_feat_shape - ecu_sample_size) // 2),
+            sample_size=ecu_sample_size
+        )
+        self.register_image_encoder(mobilenet_pretrained)
+        if with_pc:
+            self.register_pc_encoder()
+        self.with_pc = with_pc
+
+    def register_image_encoder(self, pretrained):
+        mobilenet = imagenet.mobilenet.MobileNet()
+        if pretrained:
+            pretrained_path = os.path.join('imagenet', 'imagenet.arch=mobilenet.lr=0.1.bs=256', 'model_best.pth.tar')
+            checkpoint = th.load(pretrained_path)
+            state_dict = checkpoint['state_dict']
+
+            from collections import OrderedDict
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                name = k[7:]  # remove `module.`
+                new_state_dict[name] = v
+            mobilenet.load_state_dict(new_state_dict)
+        else:
+            mobilenet.apply(weights_init)
+        for i in range(8):
+            setattr(self, 'img_conv{}'.format(i), mobilenet.model[i])
+        setattr(self, 'img_conv8', nn.Sequential(
+            nn.Conv2d(512, 512, kernel_size=3, stride=2, padding=1, groups=512, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU6(inplace=True)
+        ))
+        setattr(self, 'img_conv9', nn.Sequential(
+            depthwise(512, 3),
+            pointwise(512, 512)
+        ))
+
+    def register_pc_encoder(self):
+        pc_channel = [16, 32, 64, 64, 64, 64, 128, 128]
+        pc_stride = [1, 2, 1, 2, 1, 2, 2, 2]
+        pc_layers = len(pc_channel)
+        first_layer = nn.Sequential(
+            nn.Conv1d(1, pc_channel[0], kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm1d(pc_channel[0]),
+            nn.ReLU6(inplace=True)
+        )
+        setattr(self, f"pc_conv0", first_layer)
+        for layer_idx in range(pc_layers - 1):
+            setattr(self, f"pc_conv{layer_idx+1}",
+                    depth_conv_1d(pc_channel[layer_idx], pc_channel[layer_idx + 1], 3, pc_stride[layer_idx]))
+        for layer_idx in range(8, 11):
+            setattr(self, f"pc_conv{layer_idx}", Identity())
+
+    def forward(self, img: th.Tensor, pc=None):
+        img_feat_fw = []
+        img_feat = img
+        pc_feat = pc
+        for layer_idx in range(10):
+            img_layer = getattr(self, f'img_conv{layer_idx}')
+            img_feat = img_layer(img_feat)
+            if layer_idx in self.img_fw_layer_src:
+                img_feat_fw.append(img_feat)
+            if self.with_pc:
+                pc_layer = getattr(self, f'pc_conv{layer_idx}')
+                pc_feat = pc_layer(pc_feat)
+        enc_feat = self.ecu(img_feat, pc_feat)
+        img_feat_fw.append(enc_feat)
+        return img_feat_fw
+
+
 class ECUSmall(nn.Module):
     def __init__(self, img_in_channel, pc_in_channel, ecu_channel,
                  sample_size, sample_lb, out_shape, concat_merge):
@@ -165,10 +252,11 @@ class ECUSmall(nn.Module):
         )
 
     def forward(self, img_feat, pc_feat):
+        h = img_feat.shape[2]
         crop_feat = th.narrow(img_feat, dim=2, start=self.sample_lb, length=self.sample_size)
         sample_feat = self.img_sample_layer(crop_feat)
         cat_feat = th.cat((sample_feat, pc_feat), dim=1)
         diff = self.diff_extract_layer(cat_feat)
-        diff_up = th.stack([diff] * self.out_shape, dim=2)
+        diff_up = th.stack([diff] * h, dim=2)
         fixed_feat = th.cat((diff_up, img_feat), dim=1) if self.concat_merge else diff_up + img_feat
         return fixed_feat

@@ -8,10 +8,13 @@ from __future__ import absolute_import, division, print_function
 
 import numpy as np
 import torch
+import torch as th
 import torch.nn as nn
 
 from collections import OrderedDict
 from layers import *
+from components import Identity, img2pc_bridge, depth_conv_1d, depthwise, pointwise, weights_init
+from torch.nn.functional import interpolate
 
 
 class DepthDecoder(nn.Module):
@@ -61,5 +64,52 @@ class DepthDecoder(nn.Module):
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
                 self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
+
+        return self.outputs
+
+
+class MobileNetDecoder(nn.Module):
+    def __init__(self, scales=range(4), num_output_channel=1):
+        super(MobileNetDecoder, self).__init__()
+        self.img_fw_layer_dst = [3, 2, 1]
+        self.scales = scales
+        self.register_decoder(out_channel=num_output_channel)
+        self.outputs = {}
+        self.sigmoid = nn.Sigmoid()
+
+    def register_decoder(self, kernel_size=5, out_channel=1):
+        decoder_in_channel = [512, 512, 512, 256, 128]
+        decoder_out_channel = [512, 256, 128, 64, 32]
+        for layer_idx in range(5):
+            layer = nn.Sequential(
+                depthwise(decoder_in_channel[layer_idx], kernel_size if layer_idx != 0 else 3),
+                pointwise(decoder_in_channel[layer_idx], decoder_out_channel[layer_idx])
+            )
+            weights_init(layer)
+            setattr(self, f"decode_conv{layer_idx}", layer)
+        for inv_out_layer_idx in self.scales:
+            out_layer_idx = 4 - inv_out_layer_idx
+            layer = Conv3x3(decoder_out_channel[out_layer_idx], out_channel)
+            # layer = pointwise(decoder_out_channel[out_layer_idx], out_channel)
+            weights_init(layer)
+            setattr(self, f"out_conv{out_layer_idx}", layer)
+
+    def forward(self, features):
+        self.outputs = {}
+        dec_feat = features[-1]
+        fw_idx = -2
+        for layer_idx in range(5):
+            dec_layer = getattr(self, f'decode_conv{layer_idx}')
+            # print(layer_idx, dec_feat.shape, dec_layer)
+            dec_feat = dec_layer(dec_feat)
+            dec_feat = interpolate(dec_feat, scale_factor=2, mode='nearest')
+            inv_layer_idx = 4 - layer_idx
+            if inv_layer_idx in self.scales:
+                out_layer = getattr(self, f'out_conv{layer_idx}')
+                self.outputs[("disp", 4-layer_idx)] = self.sigmoid(out_layer(dec_feat))
+            if layer_idx in self.img_fw_layer_dst:
+                fw_feat = features[fw_idx]
+                fw_idx -= 1
+                dec_feat = th.cat((dec_feat, fw_feat), dim=1)
 
         return self.outputs
